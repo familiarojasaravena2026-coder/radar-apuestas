@@ -109,6 +109,13 @@ details>summary::-webkit-details-marker{display:none}
 .mini .it input{width:84px;font-family:var(--f-mono);padding:6px 8px;font-size:15px}
 .item{padding:12px 14px;display:grid;gap:8px;border-top:1px solid var(--line)}
 .item:first-child{border-top:0}
+.sporthead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;border-bottom:3px solid var(--fg);padding-bottom:4px;margin-top:10px}
+.sporthead h2{font-size:26px;font-weight:700;margin:0}
+.score{flex:none;width:52px;height:52px;border-radius:12px;background:var(--sunk);display:grid;place-items:center;align-content:center;line-height:1}
+.score b{font-family:var(--f-mono);font-size:20px}
+.score span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+.score.good{background:var(--good-soft);color:var(--good)}
+.mov{font-size:13px;font-weight:600}
 .note{color:var(--muted);font-size:13px;margin:0}
 .empty{padding:36px 10px;text-align:center;color:var(--muted)}
 .tbl{overflow-x:auto}
@@ -257,7 +264,7 @@ function top3(m){
   for(const o of [...c].sort((a,b)=>b.p-a.p)){if(rest.length===2)break;if(o.id===first.id||used.has(o.familia))continue;used.add(o.familia);rest.push(o)}
   const opts=[{...first,tag},...rest.map(o=>({...o,tag:'probable'}))];
   const ce=opts.filter(o=>o.ev!=null&&o.ev>0);if(ce.length)ce.reduce((a,b)=>b.ev>a.ev?b:a).mayor=true;
-  return {opts,estado:tag==='equilibrio'?'valor':opts.some(o=>o.q)?'sin_valor':'revisar'};
+  return {opts,estado:tag==='equilibrio'?'valor':c.some(o=>o.q)?'sin_valor':'revisar'};
 }
 const registrada=(m,oid)=>HIST&&HIST.apuestas.some(a=>a.local===m.local&&a.visita===m.visita&&a.opcion===oid&&a.hora===m.hora);
 const vis=()=>D.partidos.filter(m=>deporte==='todos'||m.deporte===deporte);
@@ -301,6 +308,20 @@ function lineaOpcion(m,o,pre,extraChips=''){  // tarjeta compacta para listas
 }
 
 /* ---------- Partidos ---------- */
+function movHtml(o){
+  if(o.p0==null||Math.abs(o.p-o.p0)<0.02)return '';
+  const baja=o.p>o.p0,de=o.q0?dec(o.q0):pct(1/o.p0),a=o.mejor?dec(o.mejor):pct(1/o.p);
+  return `<div class="mov ${baja?'pos':'neg'}">${baja?'↓ La cuota bajó':'↑ La cuota subió'} de ${de} a ${a}${baja?' · dinero informado':''}</div>`;
+}
+function puntaje(m){
+  const t=top3(m),conf=(m.confianza?m.confianza.valor:60)/100;
+  if(!t.opts.length)return {s:0,t};
+  if(t.estado==='valor')return {s:Math.round(55+45*Math.min(1,t.opts[0].ev/0.10)*conf),t};
+  const evs=cands(m).filter(o=>o.ev!=null).map(o=>o.ev);
+  if(evs.length)return {s:Math.round(Math.min(54,55*Math.max(0,1+Math.max(...evs)/0.10)*conf)),t};
+  return {s:Math.round(15*conf),t};
+}
+const confChip=m=>m.confianza?`<span class="chip ${m.confianza.nivel==='Alta'?'good':m.confianza.nivel==='Media'?'warn':'bad'}">Confianza ${m.confianza.nivel.toLowerCase()} · ${m.confianza.valor}</span>`:'';
 function optHtml(m,o,i){
   const r=riesgo(o.p);
   return `<div class="opt ${i===0?'first':''}">
@@ -308,38 +329,46 @@ function optHtml(m,o,i){
     <div><div class="mkt">${esc(o.mercado)}</div><div class="sel">${esc(o.sel)}</div></div>
     <div class="prob"><b>${pct(o.p)}</b><span class="chip ${r.c}">${r.t}</span></div>
     <div class="meter"><i style="width:${(o.p*100).toFixed(1)}%"></i></div>
+    ${movHtml(o)}
     <div class="kv"><span>Cuota mínima en Jugabet</span><b>${dec(minimo(o.p))}</b><span>Mejor cuota del mercado</span><b>${dec(o.mejor)}</b>
       ${o.q?`<span>Valor${o.q.de==='Jugabet'?' con tu cuota':''}</span><b>${valTxt(o)}</b>`:''}${o.stake>0?`<span>Monto sugerido</span><b>${clp(o.stake)}</b>`:''}</div>
     <div class="act">${jbIn(m,o,'jb')}${regForm(m,o)}</div></div>`;
 }
-function ticket(m){
-  const t=top3(m),lejos=new Date(m.hora)-Date.now()>864e5;
-  const est={valor:'<span class="chip good">Con valor</span>',sin_valor:'<span class="chip warn">Sin valor a la cuota actual</span>',revisar:'<span class="chip info">Sin cuotas: compara en Jugabet</span>',sin_opcion:'<span class="chip bad">Sin opción</span>'}[t.estado];
-  const meta=[DEP[m.deporte],esc(m.liga),hora(m.hora)+' hrs',esc(m.fuente),m.lambdas?`goles esp. ${dec(m.lambdas[0])}–${dec(m.lambdas[1])}`:''].filter(Boolean).join(' · ');
+function ticket(m,pt){
+  const t=pt.t,lejos=new Date(m.hora)-Date.now()>864e5;
+  const est={valor:'<span class="chip good">Con valor</span>',sin_valor:'<span class="chip warn">Sin valor</span>',revisar:'<span class="chip info">Sin cuotas</span>',sin_opcion:'<span class="chip bad">Sin opción</span>'}[t.estado];
+  const meta=[esc(m.liga),hora(m.hora)+' hrs',esc(m.fuente),m.lambdas?`goles esp. ${dec(m.lambdas[0])}–${dec(m.lambdas[1])}`:''].filter(Boolean).join(' · ');
   const rows=m.opciones.map(o0=>{const o=enr(m,o0),r=riesgo(o.p),k=m.key+'|'+o.id;
     return `<div class="it"><div><b>${esc(o.sel)}</b> <span class="chip ${r.c}">${r.k}</span><div class="meta">${esc(o.mercado)} · ${pct(o.p)} · mín. ${dec(minimo(o.p))} · mercado ${dec(o.mejor)} · ${valTxt(o)}</div></div>
       <input id="t-${esc(k)}" data-jb="${esc(k)}" aria-label="Cuota Jugabet ${esc(o.sel)}" inputmode="decimal" placeholder="Jugabet" value="${jb[k]?dec(jb[k]):''}"></div>`}).join('');
   return `<article class="card ${t.estado==='valor'?'valor':''}">
-    <div class="head"><div class="teams">${esc(m.local)}<span>vs</span>${esc(m.visita)}</div><div class="meta">${meta}</div>
-      <div class="chips">${est}${lejos?'<span class="chip neutral">Falta más de 1 día</span>':''}</div></div>
+    <div class="head"><div style="display:flex;gap:12px;align-items:center"><div class="score ${t.estado==='valor'?'good':''}"><b>${pt.s}</b><span>puntaje</span></div>
+      <div style="min-width:0"><div class="teams">${esc(m.local)}<span>vs</span>${esc(m.visita)}</div><div class="meta">${meta}</div></div></div>
+      <div class="chips">${est}${confChip(m)}${lejos?'<span class="chip neutral">Falta más de 1 día</span>':''}</div>
+      ${m.confianza?`<div class="meta">${esc(m.confianza.motivos.join(' · '))}</div>`:''}</div>
     ${t.opts.length?t.opts.map((o,i)=>optHtml(m,o,i)).join(''):'<div class="empty">Ninguna opción cumple tus criterios.</div>'}
     <details ${m._open?'open':''} data-d="${esc(m.key)}"><summary>Todas las opciones (${m.opciones.length}) ▾</summary><div class="mini">${rows}</div></details></article>`;
 }
 function renderPartidos(){
   const P=vis(),DS=visD();let h=avisos();
   if(!P.length&&!DS.length){$('v-partidos').innerHTML=h+'<div class="empty">No hay partidos en este rango. Prueba con más días u otro deporte.</div>';return}
-  const dias=[...new Set([...P,...DS].map(m=>ymd(m.hora)))].sort();
-  for(const k of dias){
-    const del=P.filter(m=>ymd(m.hora)===k).map(m=>({m,t:top3(m)})).sort((a,b)=>((a.t.estado==='valor'?0:1)-(b.t.estado==='valor'?0:1))||(new Date(a.m.hora)-new Date(b.m.hora)));
-    const ds=DS.filter(m=>ymd(m.hora)===k),[t,s]=dayTitle(k);
-    h+=`<div class="dayhead">${esc(t)}<small>${esc(s)} · ${del.length} partido${del.length!==1?'s':''}</small></div>`+del.map(x=>ticket(x.m)).join('');
-    if(ds.length)h+=`<details class="card"><summary style="color:var(--muted)">Sin datos suficientes (${ds.length}) ▾</summary><div class="mini">${ds.map(d=>`<div class="item"><div><b>${esc(d.local)}</b> vs <b>${esc(d.visita)}</b><div class="meta">${esc(d.liga)} · ${hora(d.hora)}</div></div><div class="meta">${esc(d.motivo)}</div></div>`).join('')}</div></details>`;
+  for(const dep of ['futbol','tenis','basquetbol']){
+    const Pd=P.filter(m=>m.deporte===dep),Dd=DS.filter(m=>m.deporte===dep);if(!Pd.length&&!Dd.length)continue;
+    const nval=Pd.filter(m=>top3(m).estado==='valor').length;
+    h+=`<div class="sporthead"><h2>${DEP[dep]}</h2><span class="meta">${Pd.length} evento${Pd.length!==1?'s':''} · ${nval} con valor</span></div>`;
+    for(const k of [...new Set([...Pd,...Dd].map(m=>ymd(m.hora)))].sort()){
+      const del=Pd.filter(m=>ymd(m.hora)===k).map(m=>({m,pt:puntaje(m)})).sort((a,b)=>(b.pt.s-a.pt.s)||(new Date(a.m.hora)-new Date(b.m.hora)));
+      const ds=Dd.filter(m=>ymd(m.hora)===k),[t,s]=dayTitle(k);
+      h+=`<div class="dayhead">${esc(t)}<small>${esc(s)} · de mejor a peor</small></div>`+del.map(x=>ticket(x.m,x.pt)).join('');
+      if(ds.length)h+=`<details class="card"><summary style="color:var(--muted)">Sin datos suficientes (${ds.length}) ▾</summary><div class="mini">${ds.map(d=>`<div class="item"><div><b>${esc(d.local)}</b> vs <b>${esc(d.visita)}</b><div class="meta">${esc(d.liga)} · ${hora(d.hora)}</div></div><div class="meta">${esc(d.motivo)}</div></div>`).join('')}</div></details>`;
+    }
   }
-  h+=`<details class="card"><summary>Cómo leer cada partido ▾</summary><div class="item" style="border-top:0">
-    <p class="note"><b>Opción 1 "Mejor equilibrio":</b> entre las que tienen valor, la que más hace crecer tu banca considerando las veces que pierde. Si ninguna tiene valor, aparece la más probable con la etiqueta "sin valor".</p>
-    <p class="note"><b>Opciones 2 y 3:</b> las más probables de mercados distintos. En tenis hay solo dos.</p>
-    <p class="note"><b>Riesgo:</b> bajo 75% o más · medio 55% a 75% · alto menos de 55%. Riesgo bajo no es seguro.</p>
-    <p class="note"><b>Cuota mínima en Jugabet:</b> desde esa cuota la apuesta tiene valor. Escribe la que ves y todo se recalcula.</p></div></details>`;
+  h+=`<details class="card"><summary>Cómo leer cada evento ▾</summary><div class="item" style="border-top:0">
+    <p class="note"><b>Puntaje 0 a 100:</b> de 55 a 100 los eventos con valor, según su ventaja y la confianza del análisis; bajo 55 los sin valor, del más cercano a tenerlo al más lejano.</p>
+    <p class="note"><b>Confianza:</b> según casas con cuotas, Pinnacle, fuente de la probabilidad, acuerdo entre modelo y mercado y partidos jugados.</p>
+    <p class="note"><b>↓ La cuota bajó:</b> desde que la app vio el evento por primera vez; suele indicar dinero informado. ↑ subió.</p>
+    <p class="note"><b>Opción 1 "Mejor equilibrio":</b> la que más hace crecer tu banca entre las con valor; si ninguna tiene valor, la más probable. <b>2 y 3:</b> las más probables de mercados distintos.</p>
+    <p class="note"><b>Riesgo:</b> bajo 75% o más · medio 55% a 75% · alto menos de 55%.</p></div></details>`;
   $('v-partidos').innerHTML=h;
 }
 

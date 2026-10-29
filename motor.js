@@ -185,13 +185,20 @@ class ApiSports {
   tabla(liga, temp) { return this._cache(`tb_${liga}_${temp}`, () => this._get('/standings', {league: liga, season: temp})).then(d => d || []); }
 }
 
+function factorForma(forma, puntos, jugados) {  // entre 0,90 y 1,10
+  forma = (forma || '').slice(-5);
+  if (forma.length < 3 || !jugados) return 1;
+  const ppg5 = [...forma].reduce((s, c) => s + (c === 'W' ? 3 : c === 'D' ? 1 : 0), 0) / forma.length;
+  return Math.max(0.9, Math.min(1.1, 1 + 0.1 * (ppg5 - (puntos || 0) / jugados)));
+}
 function statsDesdeTabla(resp) {
   const eq = {};
   if (!resp || !resp.length) return [eq, null];
   for (const grupo of resp[0].league.standings) for (const e of grupo) {
     const h = e.home || {}, a = e.away || {};
     eq[e.team.id] = {nombre: e.team.name, hP: h.played || 0, hGF: (h.goals || {}).for || 0, hGA: (h.goals || {}).against || 0,
-      aP: a.played || 0, aGF: (a.goals || {}).for || 0, aGA: (a.goals || {}).against || 0};
+      aP: a.played || 0, aGF: (a.goals || {}).for || 0, aGA: (a.goals || {}).against || 0,
+      forma: factorForma(e.form, e.points, (e.all || {}).played)};
   }
   const v = Object.values(eq), hp = v.reduce((s, t) => s + t.hP, 0), ap = v.reduce((s, t) => s + t.aP, 0);
   if (hp < 10 || ap < 10) return [eq, null];
@@ -240,7 +247,8 @@ function lambdasEst(l, v, prom, k = 4) {
   const {hg, ag} = prom;
   const attL = ((l.hGF + k * hg) / (l.hP + k)) / hg, defL = ((l.hGA + k * ag) / (l.hP + k)) / ag;
   const attV = ((v.aGF + k * ag) / (v.aP + k)) / ag, defV = ((v.aGA + k * hg) / (v.aP + k)) / hg;
-  return [attL * defV * hg, attV * defL * ag];
+  const fl = l.forma || 1, fv = v.forma || 1;
+  return [attL * defV * hg * Math.sqrt(fl / fv), attV * defL * ag * Math.sqrt(fv / fl)];
 }
 
 /* ---------------------------------------------------------------- consenso del mercado */
@@ -270,7 +278,7 @@ function consenso(ev, deporte = 'futbol') {
         const G = grupos[g] = grupos[g] || {};
         for (const [k, v] of Object.entries(outs)) {
           const r = G[k] = G[k] || {probs: [], best: 0, book: '', books: new Set()};
-          r.probs.push([inv[k] / s, w]); r.books.add(titulo);
+          r.probs.push([inv[k] / s, w, bk.key]); r.books.add(titulo);
           if (v > r.best) { r.best = v; r.book = titulo; }
         }
       }
@@ -278,12 +286,15 @@ function consenso(ev, deporte = 'futbol') {
   }
   const out = {};
   for (const [g, G] of Object.entries(grupos)) for (const [k, r] of Object.entries(G)) {
-    const W = r.probs.reduce((s, x) => s + x[1], 0), p = r.probs.reduce((s, x) => s + x[0] * x[1], 0) / W;
+    // Pinnacle es la referencia principal: 70% Pinnacle, 30% el resto de las casas
+    const pin = r.probs.filter(x => x[2] === 'pinnacle').map(x => x[0]), otros = r.probs.filter(x => x[2] !== 'pinnacle');
+    const prom = otros.length ? otros.reduce((s, x) => s + x[0] * x[1], 0) / otros.reduce((s, x) => s + x[1], 0) : null;
+    const p = pin.length && otros.length ? 0.7 * pin[0] + 0.3 * prom : pin.length ? pin[0] : prom;
     let oid;
     if (g === 'h2h') oid = k;
     else { const [tipo, val] = g.split('|'); const v = Number(val);
       oid = tipo === 'totals' ? `${k}_${fmtG(v)}` : (k === 'hcp1' ? `hcp1_${fmtSigno(v)}` : `hcp2_${fmtSigno(-v)}`); }
-    out[oid] = {p, best: r.best, book: r.book, n: r.books.size};
+    out[oid] = {p, best: r.best, book: r.book, n: r.books.size, pin: pin.length > 0};
   }
   return out;
 }
@@ -337,21 +348,37 @@ function analizarFutbol(local, visita, mercado, lamEst, cfg) {
     pM['1X'] = pM['1'] + pM.X; pM.X2 = pM.X + pM['2']; pM['12'] = pM['1'] + pM['2'];
   }
   const pE = lamEst ? probsDeMatriz(matriz(...lamEst), lineas) : null;
-  let fuente, fin;
-  if (pM && pE) { fuente = 'Mercado + estadísticas'; fin = {}; for (const k in pM) if (k in pE) fin[k] = w * pM[k] + (1 - w) * pE[k]; }
+  let fuente, fin, acuerdo = null;
+  if (pM && pE) { fuente = 'Mercado + estadísticas'; fin = {}; for (const k in pM) if (k in pE) fin[k] = w * pM[k] + (1 - w) * pE[k];
+    acuerdo = ['1', 'X', '2'].reduce((s, k) => s + Math.abs(pM[k] - pE[k]), 0) / 3; }
   else if (pM) { fuente = 'Solo mercado'; fin = pM; }
   else if (pE) { fuente = 'Solo estadísticas'; fin = pE; }
   else return null;
   const opciones = Object.entries(fin).filter(([, p]) => p > 0.01 && p < 0.995).map(([oid, p]) => _opcion(oid, p, mercado[oid], local, visita, 'futbol', cfg));
   const lam = lamM && lamEst ? [w * lamM[0] + (1 - w) * lamEst[0], w * lamM[1] + (1 - w) * lamEst[1]] : (lamM || lamEst);
-  return {fuente, lambdas: lam.map(x => Math.round(x * 100) / 100), opciones: ordenar(opciones)};
+  return {fuente, lambdas: lam.map(x => Math.round(x * 100) / 100), opciones: ordenar(opciones),
+    _acuerdo: acuerdo, _pin: Object.values(mercado).some(v => v.pin)};
 }
 function analizarMercado(ev, dep, cfg) {
   const m = consenso(ev, dep), val = {};
   for (const [k, v] of Object.entries(m)) if (v.n >= cfg.min_casas) val[k] = v;
   if (!val['1'] || !val['2']) return null;
   const opciones = Object.entries(val).filter(([, v]) => v.p > 0.01 && v.p < 0.995).map(([oid, v]) => _opcion(oid, v.p, v, ev.home_team, ev.away_team, dep, cfg));
-  return {fuente: 'Solo mercado', lambdas: null, opciones: ordenar(opciones)};
+  return {fuente: 'Solo mercado', lambdas: null, opciones: ordenar(opciones), _acuerdo: null, _pin: Object.values(val).some(v => v.pin)};
+}
+function confianza(fuente, casas, pin, acuerdo, jugados) {
+  const base = {'Mercado + estadísticas': 0.9, 'Solo mercado': 0.8, 'Solo estadísticas': 0.45}[fuente];
+  const motivos = [{'Mercado + estadísticas': 'mercado y estadísticas', 'Solo mercado': 'solo mercado', 'Solo estadísticas': 'solo estadísticas, sin cuotas'}[fuente]];
+  let c = base * (0.7 + 0.3 * Math.min(casas / 8, 1));
+  motivos.push(casas ? `${casas} casas` : 'sin casas');
+  if (pin) { c = Math.min(1, c + 0.08); motivos.push('con Pinnacle'); }
+  if (acuerdo != null) {
+    c *= 1 - 0.4 * Math.min(acuerdo / 0.15, 1);
+    motivos.push(acuerdo < 0.05 ? 'modelo y mercado coinciden' : acuerdo > 0.10 ? 'modelo y mercado difieren' : 'modelo y mercado se parecen');
+  }
+  if (jugados != null) { c *= 0.8 + 0.2 * Math.min(jugados / 16, 1); if (jugados < 10) motivos.push('pocos partidos jugados'); }
+  const v = Math.round(c * 100);
+  return {valor: v, nivel: v >= 75 ? 'Alta' : v >= 55 ? 'Media' : 'Baja', motivos};
 }
 function seleccion(partido, cfg) {
   const cands = [];
@@ -439,6 +466,12 @@ function emparejar(ev, comp, fixtures) {
   }
   return mejor;
 }
+function jugadosDeFixture(fx, tablas) {
+  if (!fx) return null;
+  const [eq] = tablas[fx.league.id + '|' + fx.league.season] || [{}, null];
+  const l = eq[fx.teams.home.id], v = eq[fx.teams.away.id];
+  return l && v ? Math.min(l.hP + l.aP, v.hP + v.aP) : null;
+}
 function lamDeFixture(fx, tablas) {
   if (!fx) return null;
   const [eq, prom] = tablas[fx.league.id + '|' + fx.league.season] || [{}, null];
@@ -451,14 +484,16 @@ function construirPartidos(eventos, fixtures, tablas, cfg) {
   const base = (comp, local, visita, hora) => ({competicion: comp, deporte: COMPETICIONES[comp].deporte, liga: COMPETICIONES[comp].nombre, local, visita, hora});
   for (const [comp, ev] of eventos) {
     const dep = COMPETICIONES[comp].deporte, b = base(comp, ev.home_team, ev.away_team, ev.commence_time);
-    let res, motivo, fid = null;
+    let res, motivo, fid = null, fx = null;
     if (dep === 'futbol') {
-      const fx = emparejar(ev, comp, fixtures); if (fx) { usados.add(fx.fixture.id); fid = fx.fixture.id; }
+      fx = emparejar(ev, comp, fixtures); if (fx) { usados.add(fx.fixture.id); fid = fx.fixture.id; }
       res = analizarFutbol(ev.home_team, ev.away_team, consenso(ev, dep), lamDeFixture(fx, tablas), cfg);
       motivo = 'Las casas aún no publican cuotas completas y no hay estadísticas suficientes de los equipos.';
     } else { res = analizarMercado(ev, dep, cfg); motivo = `Menos de ${cfg.min_casas} casas con cuotas para este partido.`; }
     if (res) {
       Object.assign(res, b, {key: 'o-' + ev.id, fixture_id: fid, casas: (ev.bookmakers || []).length});
+      const jug = dep === 'futbol' && res.fuente !== 'Solo mercado' ? jugadosDeFixture(fx, tablas) : null;
+      res.confianza = confianza(res.fuente, res.casas, res._pin, res._acuerdo, jug); delete res._pin; delete res._acuerdo;
       if (dep === 'tenis' && ev.sport_title) res.liga = ev.sport_title;
       partidos.push(res);
     } else descartados.push(Object.assign(b, {motivo}));
@@ -468,10 +503,27 @@ function construirPartidos(eventos, fixtures, tablas, cfg) {
     if (usados.has(fx.fixture.id)) continue;
     const b = base(id2comp[fx.league.id], fx.teams.home.name, fx.teams.away.name, fx.fixture.date);
     const res = analizarFutbol(b.local, b.visita, {}, lamDeFixture(fx, tablas), cfg);
-    if (res) partidos.push(Object.assign(res, b, {key: 'f-' + fx.fixture.id, fixture_id: fx.fixture.id, casas: 0}));
+    if (res) {
+      Object.assign(res, b, {key: 'f-' + fx.fixture.id, fixture_id: fx.fixture.id, casas: 0});
+      res.confianza = confianza(res.fuente, 0, res._pin, res._acuerdo, jugadosDeFixture(fx, tablas)); delete res._pin; delete res._acuerdo;
+      partidos.push(res);
+    }
     else descartados.push(Object.assign(b, {motivo: 'Sin cuotas en el agregador y menos de 3 partidos jugados en la tabla (copa, fase final o inicio de torneo).'}));
   }
   return [partidos, descartados];
+}
+function marcarMovimientos(partidos, demo) {
+  if (demo) {  // en el ejemplo se simula un movimiento para mostrarlo
+    for (const p of partidos.slice(0, 3)) for (const o of p.opciones) if ((o.id === '1' || o.id === 'over_2.5') && o.mejor) { o.p0 = Math.round((o.p - 0.04) * 1e4) / 1e4; o.q0 = Math.round(o.mejor * 108) / 100; }
+    return;
+  }
+  const hist = Store.get('movimientos', {}), lim = Date.now() - 864e5;
+  for (const k of Object.keys(hist)) if (new Date(hist[k].hora).getTime() < lim) delete hist[k];
+  for (const p of partidos) {
+    const h = hist[p.key] = hist[p.key] || {hora: p.hora, op: {}};
+    for (const o of p.opciones) { const ini = h.op[o.id]; if (!ini) h.op[o.id] = {p: o.p, q: o.mejor}; else { o.p0 = ini.p; o.q0 = ini.q; } }
+  }
+  Store.set('movimientos', hist);
 }
 async function correr(rango, demo, log) {
   const cfg = leerConfig();
@@ -488,8 +540,9 @@ async function correr(rango, demo, log) {
   log('Calculando probabilidades…');
   await new Promise(r => setTimeout(r, 30));
   const [partidos, descartados] = construirPartidos(eventos, fixtures, tablas, cfg);
+  marcarMovimientos(partidos, demo);
   const ahora = new Date();
-  return {version: 1, rango, generado: ahora.toLocaleString('es-CL', {timeZone: TZ, dateStyle: 'short', timeStyle: 'short'}),
+  return {version: 2, rango, generado: ahora.toLocaleString('es-CL', {timeZone: TZ, dateStyle: 'short', timeStyle: 'short'}),
     generado_ts: ahora.getTime() / 1000, demo, creditos, gastados, avisos, partidos, descartados};
 }
 
@@ -609,7 +662,7 @@ const Seguimiento = {
         const k = p.key + '|' + c.id;
         const e = nuevas[k] || {id: k, partido: p.key, deporte: p.deporte, competicion: p.competicion, liga: p.liga, local: p.local, visita: p.visita,
           hora: p.hora, fixture_id: p.fixture_id, fuente: p.fuente, opcion: c.id, familia: c.familia, mercado: c.mercado, sel: c.sel, p: c.p,
-          cuota: c.mejor, ev: c.ev, valor: !!c.valor, grupos: [], estado: 'pendiente', marcador: null, actualizado: new Date().toISOString()};
+          cuota: c.mejor, ev: c.ev, valor: !!c.valor, confianza: (p.confianza || {}).nivel, grupos: [], estado: 'pendiente', marcador: null, actualizado: new Date().toISOString()};
         if (!e.grupos.includes(grupo)) e.grupos.push(grupo);
         nuevas[k] = e;
       }
@@ -645,7 +698,8 @@ const Seguimiento = {
     const todos = Object.values(this.datos()), res = todos.filter(v => v.estado === 'ganada' || v.estado === 'perdida');
     const DIM = [['deporte', 'Deporte', v => DEPORTES[v.deporte] || v.deporte], ['liga', 'Liga', v => v.liga], ['mercado', 'Mercado', v => v.mercado],
       ['riesgo', 'Nivel de riesgo', v => riesgoTxt(v.p)], ['fuente', 'Fuente de la probabilidad', v => v.fuente],
-      ['tramo', 'Tramo de cuota', v => tramoCuota(v.cuota)], ['grupo', 'Tipo de recomendación', null]];
+      ['tramo', 'Tramo de cuota', v => tramoCuota(v.cuota)], ['confianza', 'Confianza del análisis', v => v.confianza || 'Sin dato'],
+      ['grupo', 'Tipo de recomendación', null]];
     const out = {total: this._grupo(res), pendientes: todos.filter(v => v.estado === 'pendiente').length,
       nulas: todos.filter(v => v.estado === 'nula' || v.estado === 'sin_resultado').length, apuesta_simulada: APUESTA_SIM,
       min_grupo: MIN_GRUPO, aviso: this.aviso, desglose: [], calibracion: []};
@@ -702,7 +756,7 @@ const Seguimiento = {
 const CACHE_MIN = 60;
 function cacheFresco(rango) {
   const d = Store.get('analisis_' + rango);
-  if (!d || d.version !== 1) return null;
+  if (!d || d.version !== 2) return null;
   if (ymd(d.generado_ts * 1000) !== ymd(new Date()) || Date.now() / 1000 - d.generado_ts > CACHE_MIN * 60) return null;
   return Object.assign(d, {desde_cache: true});
 }
@@ -773,5 +827,5 @@ function datosDemo(rango) {
   return {eventos, fixtures, tablas};
 }
 
-if (typeof module !== 'undefined') module.exports = {consenso, analizarFutbol, analizarMercado, seleccion, probsDeMatriz, matriz, ajustarLambdas,
+if (typeof module !== 'undefined') module.exports = {confianza, factorForma, consenso, analizarFutbol, analizarMercado, seleccion, probsDeMatriz, matriz, ajustarLambdas,
   gana, sim, ventana, datosDemo, construirPartidos, leerConfig, Seguimiento, Historial, Store, COMPETICIONES, ymd, inicioDia};
