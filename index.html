@@ -41,8 +41,8 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom,0px))}
 .pill{flex:none;font-size:13px;border:1px solid var(--line);background:var(--surface);color:var(--fg);padding:6px 12px;border-radius:999px;font-weight:600}
 .pill[aria-pressed="true"]{background:var(--fg);border-color:var(--fg);color:var(--surface)}
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--surface);border-top:1px solid var(--line);padding:0 env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
-.nav-in{max-width:720px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
-.nav button{background:none;border:0;color:var(--muted);font:inherit;font-size:11px;font-weight:600;padding:8px 2px 9px;display:grid;justify-items:center;gap:3px}
+.nav-in{max-width:720px;margin:0 auto;display:grid;grid-template-columns:repeat(6,1fr)}
+.nav button{background:none;border:0;color:var(--muted);font:inherit;font-size:10.5px;font-weight:600;padding:8px 2px 9px;display:grid;justify-items:center;gap:3px}
 .nav button svg{width:22px;height:22px}
 .nav button[aria-selected="true"]{color:var(--accent)}
 .wrap{max-width:720px;margin:0 auto;padding:16px max(14px,env(safe-area-inset-right,0px)) 24px max(14px,env(safe-area-inset-left,0px));display:grid;gap:14px}
@@ -116,6 +116,8 @@ details>summary::-webkit-details-marker{display:none}
 .score span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
 .score.good{background:var(--good-soft);color:var(--good)}
 .mov{font-size:13px;font-weight:600}
+.item.tachada{opacity:.6}
+.item.tachada .sel-b{text-decoration:line-through}
 .note{color:var(--muted);font-size:13px;margin:0}
 .empty{padding:36px 10px;text-align:center;color:var(--muted)}
 .tbl{overflow-x:auto}
@@ -213,6 +215,7 @@ a{color:var(--accent);font-weight:600}
   </section>
 
   <section id="v-partidos" hidden style="display:grid;gap:14px"></section>
+  <section id="v-boleta" hidden style="display:grid;gap:14px"></section>
   <section id="v-todas" hidden style="display:grid;gap:14px"></section>
   <section id="v-seguras" hidden style="display:grid;gap:14px"></section>
   <section id="v-historial" hidden style="display:grid;gap:14px"></section>
@@ -221,6 +224,7 @@ a{color:var(--accent);font-weight:600}
 
 <nav class="nav" id="nav" hidden><div class="nav-in" role="tablist">
   <button role="tab" data-tab="partidos" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M3 12h18"/></svg>Partidos</button>
+  <button role="tab" data-tab="boleta" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>Boleta</button>
   <button role="tab" data-tab="todas" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Todas</button>
   <button role="tab" data-tab="seguras" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>Seguras</button>
   <button role="tab" data-tab="historial" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5M12 7v5l3 2"/></svg>Historial</button>
@@ -230,7 +234,7 @@ a{color:var(--accent);font-weight:600}
 <script src="motor.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-const TABS=['partidos','todas','seguras','historial','rendimiento'];
+const TABS=['partidos','boleta','todas','seguras','historial','rendimiento'];
 const VIEWS=['v-setup','v-confirm','v-loading','v-error',...TABS.map(t=>'v-'+t)];
 const show=v=>{VIEWS.forEach(x=>$(x).hidden=x!==v);window.scrollTo(0,0)};
 const pct=(x,d=1)=>x==null?'—':(x*100).toFixed(d).replace('.',',')+'%';
@@ -372,6 +376,60 @@ function renderPartidos(){
   $('v-partidos').innerHTML=h;
 }
 
+/* ================= Boleta del día ================= */
+const BOLETA_MIN=5;
+function datosBoleta(P,dk,enrF,candF,ptF){
+  const ahora=Date.now(),hoy=dk(new Date());
+  let dia=hoy,ev=P.filter(m=>dk(m.hora)===hoy&&new Date(m.hora)>ahora);
+  if(!ev.length){const man=dk(new Date(ahora+864e5));dia=man;ev=P.filter(m=>dk(m.hora)===man)}
+  const items=new Map(),conValor=new Set();
+  for(const m of ev){
+    // pertenencia según cuotas del mercado (estable aunque escribas cuotas de Jugabet)
+    const mk=candF(m).map(o=>{const q=o.mejor,e=q?o.p*q-1:null,f=q?Math.min(.05,Math.max(0,(o.p*q-1)/(q-1))*CFG.fraccion_kelly):0;
+      return {...o,evm:e,vm:e!=null&&e>=CFG.valor_esperado_minimo&&o.p>=CFG.probabilidad_minima,gm:f>0?o.p*Math.log(1+f*(q-1))+(1-o.p)*Math.log(1-f):0}});
+    const cv=mk.filter(o=>o.vm);
+    if(cv.length){const f=cv.reduce((a,b)=>b.gm>a.gm?b:a);items.set(m.key+'|'+f.id,{m,id:f.id,orden:f.gm,por:'Opción 1 con valor'});conValor.add(m.key)}
+    for(const o of cv)if(o.p>=0.75&&!items.has(m.key+'|'+o.id))items.set(m.key+'|'+o.id,{m,id:o.id,orden:o.gm,por:'Riesgo bajo con valor'});
+  }
+  if(items.size<BOLETA_MIN){
+    const resto=ev.filter(m=>!conValor.has(m.key)).map(m=>({m,s:ptF(m).s})).sort((a,b)=>b.s-a.s);
+    for(const {m} of resto){
+      if(items.size>=BOLETA_MIN)break;
+      const c=candF(m);if(!c.length)continue;
+      const o=c.reduce((a,b)=>b.p>a.p?b:a);
+      items.set(m.key+'|'+o.id,{m,id:o.id,orden:-1,por:'Más probable · sin valor'});
+    }
+  }
+  const lista=[...items.values()].map(it=>{
+    const o=enrF(it.m,it.m.opciones.find(x=>x.id===it.id)),k=it.m.key+'|'+it.id,cj=jb[k];
+    const tachada=!!cj&&cj<minimo(o.p);
+    return {...it,o,k,cj,tachada,stake:tachada?0:o.stake,gan:tachada?0:o.stake*(o.ev||0)};
+  }).sort((a,b)=>(a.tachada-b.tachada)||(b.orden-a.orden)||(b.o.p-a.o.p));
+  return {dia,esHoy:dia===hoy,lista,eventos:ev.length};
+}
+function renderBoleta(){
+  const b=datosBoleta(vis(),ymd,enr,cands,puntaje);
+  const act=b.lista.filter(x=>!x.tachada),total=act.reduce((s,x)=>s+x.stake,0),gan=act.reduce((s,x)=>s+x.gan,0);
+  const nval=act.filter(x=>x.stake>0).length,[t,s]=dayTitle(b.dia);
+  let h=avisos()+`<div><h1>Boleta ${b.esHoy?'de hoy':'de mañana'}</h1><p class="note" style="margin-top:4px">${esc(s||t)} · ${b.eventos} eventos revisados.${b.esHoy?'':' Ya no quedan partidos hoy.'}</p></div>
+    <div class="summary"><div class="stat"><span class="label">Con monto</span><b>${nval}</b></div>
+      <div class="stat"><span class="label">Total a apostar</span><b>${clp(total)}</b></div>
+      <div class="stat"><span class="label">Ganancia esperada</span><b class="${gan>0?'pos':''}">${gan>0?'+':''}${clp(gan)}</b></div>
+      <div class="stat"><span class="label">Banca</span><b>${clp(banca())}</b></div></div>`;
+  if(!b.lista.length){$('v-boleta').innerHTML=h+'<div class="empty">No hay eventos para armar la boleta. Toca "Hoy" arriba o prueba más tarde.</div>';return}
+  if(!nval)h+='<div class="msg info">Ninguna apuesta tiene valor con las cuotas del mercado. Las más probables aparecen solo como referencia.</div>';
+  h+=`<div class="card">${b.lista.map((x,i)=>{const o=x.o,r=riesgo(o.p),sv=x.por.startsWith('Más');
+    return `<div class="item ${x.tachada?'tachada':''}">
+      <div class="row" style="justify-content:space-between;align-items:start"><div><span class="rank" style="display:inline-grid;margin-right:6px">${i+1}</span><b>${esc(x.m.local)}</b> vs <b>${esc(x.m.visita)}</b><div class="meta">${DEP[x.m.deporte]} · ${esc(x.m.liga)} · ${hora(x.m.hora)} hrs</div></div></div>
+      <div class="row" style="justify-content:space-between;align-items:baseline"><div><div class="sel sel-b" style="font-size:16px">${esc(o.sel)}</div><div class="mkt">${esc(o.mercado)}</div></div>
+        <div style="text-align:right"><b style="font-family:var(--f-mono);font-size:20px">${pct(o.p)}</b><div><span class="chip ${r.c}">${r.k}</span></div></div></div>
+      <div class="chips"><span class="chip ${sv?'warn':'good'}">${esc(x.por)}</span>${x.tachada?'<span class="chip bad">Jugabet paga menos que la mínima</span>':''}</div>
+      <div class="kv"><span>Cuota mínima Jugabet</span><b>${dec(minimo(o.p))}</b><span>Valor</span><b>${valTxt(o)}</b><span>Monto</span><b>${x.stake>0?clp(x.stake):sv&&!x.tachada?'no recomendada':'—'}</b></div>
+      ${jbIn(x.m,o,'bo')}</div>`}).join('')}</div>
+    <p class="note">Monto según tu banca actual (máx. 5% por apuesta). Las "sin valor" no llevan monto; si Jugabet paga la mínima o más, se calcula.</p>`;
+  $('v-boleta').innerHTML=h;
+}
+
 /* ---------- Todas ---------- */
 function renderTodas(){
   let f=[];for(const m of vis())for(const o0 of m.opciones){const o=enr(m,o0);f.push({m,o,r:riesgo(o.p)})}
@@ -457,7 +515,7 @@ function setNav(){
 }
 function render(focusId,keepScroll){
   const y=window.scrollY;
-  try{({partidos:renderPartidos,todas:renderTodas,seguras:renderSeguras,historial:renderHistorial,rendimiento:renderRendimiento})[tab]();
+  try{({partidos:renderPartidos,boleta:renderBoleta,todas:renderTodas,seguras:renderSeguras,historial:renderHistorial,rendimiento:renderRendimiento})[tab]();
     VIEWS.forEach(x=>$(x).hidden=x!=='v-'+tab);setNav();}
   catch(err){console.error(err);$('error-msg').textContent='Error al mostrar: '+err.message;show('v-error')}
   if(keepScroll)window.scrollTo(0,y);
